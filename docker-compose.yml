@@ -1,0 +1,38 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker.runner"]
+    env_file: .env
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mongo_data:
