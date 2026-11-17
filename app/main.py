@@ -6,8 +6,10 @@ from fastapi import FastAPI
 from app.api.routers import health
 from app.core.config import get_settings
 from app.core.logging import configure_logging, request_id_middleware
+
 from app.db.mongo import create_mongo_client
 from app.db.redis import create_redis_client
+from app.db.indexes import ensure_indexes
 
 log = structlog.get_logger()
 
@@ -20,6 +22,14 @@ async def lifespan(app: FastAPI):
     app.state.mongo = create_mongo_client(settings.mongo_url)
     app.state.db = app.state.mongo[settings.mongo_db]
     app.state.redis = create_redis_client(settings.redis_url)
+
+    # Fail fast if Mongo is unreachable at startup: it is the source of truth,
+    # and running without its indexes would mean silent collection scans and
+    # no uniqueness on client_doc_ref. Compose only starts the api once Mongo
+    # is healthy, so this only fails when something is genuinely wrong.
+    # Redis is NOT checked here: the app is designed to run degraded without it.
+    await ensure_indexes(app.state.db)
+
     log.info("startup", app=settings.app_name)
 
     yield
