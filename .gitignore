@@ -12,6 +12,6 @@ vscode/
 __pycache__/
 *.py[cod]
 
-.pdf
+*.pdf
 
 CLAUDE.local.md

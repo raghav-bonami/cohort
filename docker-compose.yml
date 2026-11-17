@@ -1,7 +1,12 @@
 services:
   api:
     build: .
-    env_file: .env
+    env_file: 
+      - path: .env
+        required: false
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     depends_on:
@@ -11,13 +16,21 @@ services:
   worker:
     build: .
     command: ["python", "-m", "app.worker.runner"]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       mongo: { condition: service_healthy }
       redis: { condition: service_healthy }
 
   mongo:
     image: mongo:7
+    ports:
+      - "27017:27017"
+    # healthcheck/volumes unchanged
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -28,6 +41,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
