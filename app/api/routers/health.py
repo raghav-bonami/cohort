@@ -11,7 +11,7 @@ router = APIRouter(tags=["health"])
 log = structlog.get_logger()
 
 
-@router.get("/v1/health")
+@router.get("/health")
 async def health(
     response: Response,
     db: AsyncDatabase = Depends(get_db),
