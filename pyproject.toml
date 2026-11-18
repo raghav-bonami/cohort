@@ -16,3 +16,6 @@ target-version = "py312"
 # E/F: errors, I: import order, B: bug-prone patterns, UP: modern syntax,
 # BLE: blind `except Exception` (the PDF lists `except Exception: pass` as a pitfall)
 select = ["E", "F", "I", "B", "UP", "BLE"]
+
+pythonpath = ["."]
+
