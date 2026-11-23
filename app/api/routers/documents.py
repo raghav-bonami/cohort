@@ -26,10 +26,10 @@ IfMatch = Annotated[
     status_code=201,
     response_model=SubmitResponse,
     responses={
-        200:{
+        200: {
             "model": SubmitResponse,
             "description": "Idemoitent retry: this client_doc_ref was already submitted "
-            "with the smae content; the existing document is returned."
+            "with the smae content; the existing document is returned.",
         },
         **error_responses(401, 403, 409, 422),
     },
@@ -40,13 +40,15 @@ async def submit_document(
     caller: CurrentUser,
     service: DocumentServiceDep,
 ) -> SubmitResponse:
-    """Submit a document for processing. Returns 201 when created, 200 when it repeats an earlier submission."""
+    """Submit a document for processing. Returns 201 when created,
+    200 when it repeats an earlier submission."""
     doc, created = await service.submit(caller_id=caller, data=body)
     if not created:
         response.status_code = 200
     # Both cases tell the client where the document lives (its poll URL).
     response.headers["Location"] = f"/documents/{doc['_id']}"
     return SubmitResponse.from_doc(doc)
+
 
 # Declared before "/{document_id}" for readability. They can't clash anyway:
 # {document_id} matches a single path segment, and "by-ref/x" is two.
@@ -65,6 +67,7 @@ async def get_document_by_ref(
     doc = await service.get_by_ref(caller_id=caller, client_doc_ref=client_doc_ref)
     response.headers["ETag"] = etag_for(doc)
     return DocumentResponse.from_doc(doc)
+
 
 @router.get(
     "/{document_id}",

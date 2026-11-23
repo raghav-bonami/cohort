@@ -29,7 +29,7 @@ class DocumentService:
         self._repo = repo
         self._clock = clock
 
-    async def submit(self, *, caller_id: str, data: DocumentCreate) -> tuple[dict[str,Any], bool]:
+    async def submit(self, *, caller_id: str, data: DocumentCreate) -> tuple[dict[str, Any], bool]:
         """Create a document, or replay an earlier identical submission.
 
         Returns (document, created). created=False means an idempotent retry: the
@@ -203,6 +203,7 @@ def _is_client_doc_ref_conflict(exc: DuplicateKeyError) -> bool:
     key_pattern = (exc.details or {}).get("keyPattern", {})
     return "client_doc_ref" in key_pattern
 
+
 def _apply_crosswalk_policy(
     existing: dict[str, Any], caller_id: str, content_hash: str
 ) -> dict[str, Any]:
@@ -230,6 +231,7 @@ def _apply_crosswalk_policy(
 
     log.info("crosswalk_replay", document_id=document_id)
     return existing
+
 
 def _check_precondition(expected_version: int | None, doc: dict[str, Any]) -> None:
     """412 if the client's If-Match version is no longer the current one."""

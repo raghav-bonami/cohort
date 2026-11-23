@@ -48,7 +48,9 @@ class NotFoundError(AppError):
 
 
 class ConflictError(AppError):
-    status_code = 409  # request clashes with existing state client_doc_ref used for other content/owner
+    status_code = (
+        409  # request clashes with existing state client_doc_ref used for other content/owner
+    )
     code = "conflict"
 
 
