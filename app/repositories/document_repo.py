@@ -170,11 +170,25 @@ class DocumentRepository:
         """
         return await self._col.find_one({"client_doc_ref": client_doc_ref})
 
-    async def count_active(self, user_id: str) -> int:
-        """Rate-limit fallback when Redis is down. Served by user_status_created."""
-        return await self._col.count_documents(
-            {"user_id": user_id, "status": {"$in": _ACTIVE_VALUES}}
+    async def count_active(self, user_id: str, *, exclude_id: str | None = None) -> int:
+        """Rate-limit fallback when Redis is down (PLAN A7). Served by user_status_created.
+
+        exclude_id: the document asking for a slot. A PATCH on an already-active document
+        must not count itself, matching the Redis path where its slot is simply re-used.
+        """
+        query: dict[str, Any] = {"user_id": user_id, "status": {"$in": _ACTIVE_VALUES}}
+        if exclude_id is not None and (oid := parse_object_id(exclude_id)) is not None:
+            query["_id"] = {"$ne": oid}
+        return await self._col.count_documents(query)
+
+    async def active_ids_among(self, user_id: str, document_ids: list[str]) -> set[str]:
+        """Which of these ids are still active documents of this user (rate-limit reconcile)."""
+        oids = [oid for i in document_ids if (oid := parse_object_id(i)) is not None]
+        cursor = self._col.find(
+            {"_id": {"$in": oids}, "user_id": user_id, "status": {"$in": _ACTIVE_VALUES}},
+            projection={"_id": 1},
         )
+        return {str(d["_id"]) async for d in cursor}
 
     async def find_result_by_hash(self, content_hash: str) -> dict[str, Any] | None:
         """Content-cache fallback when Redis is down (PLAN A8).
@@ -190,7 +204,7 @@ class DocumentRepository:
         )
         return doc["result"] if doc else None
 
-        # ---- worker: claim and fenced stage transitions ------------------------
+    # ---- worker: claim and fenced stage transitions ------------------------
 
     async def claim_next(
         self, *, now: datetime, lease_id: str, lease_until: datetime
@@ -281,6 +295,44 @@ class DocumentRepository:
                     "failed_stage": None,
                     "lease_id": None,
                     "next_attempt_at": None,  # terminal: never claimable again
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def complete_from_cache(
+        self,
+        fence: Fence,
+        *,
+        content_hash: str,
+        summary: str,
+        tags: list[str],
+        now: datetime,
+    ) -> bool:
+        """Publish a known result for this exact content without running either stage.
+
+        Same fence and same single $set as complete_enriching, so a PATCH that lands
+        meanwhile still wins, and summary and tags still arrive together.
+        """
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    "result": {
+                        "content_version": fence.content_version,
+                        "content_hash": content_hash,
+                        "summary": summary,
+                        "tags": tags,
+                        "completed_at": now,
+                    },
+                    "stages.processing.state": StageState.SUCCEEDED.value,
+                    "stages.processing.last_error": None,
+                    "stages.enriching.state": StageState.SUCCEEDED.value,
+                    "stages.enriching.last_error": None,
+                    "status": DocumentStatus.COMPLETED.value,
+                    "failed_stage": None,
+                    "lease_id": None,
+                    "next_attempt_at": None,
                     "updated_at": now,
                 }
             },

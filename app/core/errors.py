@@ -64,6 +64,11 @@ class PreconditionFailedError(AppError):
     code = "precondition_failed"
 
 
+class RateLimitedError(AppError):
+    status_code = 429  # too many documents in progress for this user
+    code = "rate_limited"
+
+
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
     # request_id was bound by request_id_middleware for this request's context.
     request_id = structlog.contextvars.get_contextvars().get("request_id")
