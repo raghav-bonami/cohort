@@ -9,8 +9,10 @@ from app.worker.stages import SUMMARY_WORDS, SimulatedStages, StageError, make_s
 
 def no_delay(**overrides) -> Settings:
     return Settings(
-        processing_min_seconds=0, processing_max_seconds=0,
-        enriching_min_seconds=0, enriching_max_seconds=0,
+        processing_min_seconds=0,
+        processing_max_seconds=0,
+        enriching_min_seconds=0,
+        enriching_max_seconds=0,
         **overrides,
     )
 

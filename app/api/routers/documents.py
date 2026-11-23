@@ -1,18 +1,25 @@
 """Document endpoints. Thin by design: parse input, call the service, shape the output."""
 
-from fastapi import APIRouter, Response, Header
-
 from typing import Annotated
 
+from fastapi import APIRouter, Header, Response
+
 from app.api.deps import CurrentUser, DocumentServiceDep
+from app.api.etag import etag_for, parse_if_match
 from app.schemas.documents import DocumentCreate, DocumentResponse, DocumentUpdate, SubmitResponse
 from app.schemas.errors import error_responses
-from app.api.etag import etag_for, parse_if_match
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-IfMatch = Annotated[str | None, Header(alias="If-Match", description='Optional. The Etag (content_version) you last saw, e.g. "3"'
-                                       "The PATCH applies only if it still current; otherwise 412.")]
+IfMatch = Annotated[
+    str | None,
+    Header(
+        alias="If-Match",
+        description='Optional. The Etag (content_version) you last saw, e.g. "3"'
+        "The PATCH applies only if it still current; otherwise 412.",
+    ),
+]
+
 
 @router.post(
     "",
@@ -48,6 +55,7 @@ async def get_document(
     doc = await service.get(caller_id=caller, document_id=document_id)
     response.headers["Etag"] = etag_for(doc)
     return DocumentResponse.from_doc(doc)
+
 
 @router.patch(
     "/{document_id}",

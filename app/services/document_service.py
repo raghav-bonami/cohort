@@ -9,17 +9,17 @@ Later phases add their rules here:
 - update(): content cache and rate limit (7) when new content re-enters the pipeline
 """
 
-from app.core.clock import Clock, utc_now
 from typing import Any
 
 import structlog
 from pymongo.errors import DuplicateKeyError
 
-from app.core.errors import ConflictError, ForbiddenError, NotFoundError , PreconditionFailedError
-from app.domain.documents import new_document , content_change_fields
+from app.core.clock import Clock, utc_now
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError, PreconditionFailedError
+from app.domain.documents import content_change_fields, new_document
 from app.domain.enums import DocumentStatus
 from app.repositories.document_repo import DocumentRepository
-from app.schemas.documents import DocumentCreate , DocumentUpdate
+from app.schemas.documents import DocumentCreate, DocumentUpdate
 
 log = structlog.get_logger()
 
@@ -167,6 +167,7 @@ def _is_client_doc_ref_conflict(exc: DuplicateKeyError) -> bool:
     """True if the duplicate was on client_doc_ref (the only user-controlled unique key)."""
     key_pattern = (exc.details or {}).get("keyPattern", {})
     return "client_doc_ref" in key_pattern
+
 
 def _check_precondition(expected_version: int | None, doc: dict[str, Any]) -> None:
     """412 if the client's If-Match version is no longer the current one."""

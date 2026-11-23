@@ -9,21 +9,19 @@ enriching is claimed as a separate job, so both stages share one code path:
 import asyncio
 import contextlib
 import uuid
-from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import structlog
 from pymongo.errors import PyMongoError
 
+from app.core.clock import Clock, utc_now
 from app.core.config import Settings
 from app.domain.enums import DocumentStatus, StageName
 from app.repositories.document_repo import DocumentRepository, Fence
 from app.worker.stages import StageError, Stages
 
 log = structlog.get_logger()
-
-from app.core.clock import utc_now, Clock
 
 
 class Worker:
@@ -42,7 +40,9 @@ class Worker:
     async def run_once(self) -> bool:
         """Process at most one stage of one job. Returns False if nothing was due."""
         now = self._clock()
-        lease_id = uuid.uuid4().hex  # unique per claim, so a re-claim always fences out the old holder
+        lease_id = (
+            uuid.uuid4().hex
+        )  # unique per claim, so a re-claim always fences out the old holder
         doc = await self._repo.claim_next(
             now=now,
             lease_id=lease_id,

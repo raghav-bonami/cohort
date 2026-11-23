@@ -51,6 +51,7 @@ class ConflictError(AppError):
     status_code = 409  # request clashes with existing state (duplicate client_doc_ref)
     code = "conflict"
 
+
 class BadRequestError(AppError):
     status_code = 400  # a header we parse ourselves is malformed (e.g. If-Match)
     code = "bad_request"

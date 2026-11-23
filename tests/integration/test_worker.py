@@ -5,10 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings
 from app.db.mongo import DOCUMENTS
-from app.domain.documents import is_result_current, new_document, new_stage
+from app.domain.documents import is_result_current, new_document
 from app.domain.enums import StageName
 from app.repositories.document_repo import DocumentRepository, Fence
-from app.services.hashing import content_hash
 from app.schemas.documents import DocumentUpdate
 from app.services.document_service import DocumentService
 from app.worker.pipeline import Worker
@@ -16,9 +15,14 @@ from app.worker.stages import SimulatedStages, StageError, make_summary, make_ta
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
 SETTINGS = Settings(
-    lease_seconds=60, max_attempts=3, retry_base_seconds=2, worker_poll_seconds=0.05,
-    processing_min_seconds=0, processing_max_seconds=0,
-    enriching_min_seconds=0, enriching_max_seconds=0,
+    lease_seconds=60,
+    max_attempts=3,
+    retry_base_seconds=2,
+    worker_poll_seconds=0.05,
+    processing_min_seconds=0,
+    processing_max_seconds=0,
+    enriching_min_seconds=0,
+    enriching_max_seconds=0,
 )
 
 
@@ -38,7 +42,9 @@ class FakeClock:
 class ScriptedStages:
     """Stages double: fails the first N calls, counts calls, can run a hook mid-stage."""
 
-    def __init__(self, *, fail_processing=0, fail_enriching=0, during_processing=None,during_enriching=None):
+    def __init__(
+        self, *, fail_processing=0, fail_enriching=0, during_processing=None, during_enriching=None
+    ):
         self.fail = {"processing": fail_processing, "enriching": fail_enriching}
         self.calls = {"processing": 0, "enriching": 0}
         self.during_processing = during_processing
@@ -70,6 +76,7 @@ async def insert_doc(db, content="mongo redis fastapi worker lease fencing retri
 def make_worker(db, stages, clock) -> Worker:
     return Worker(DocumentRepository(db), stages, SETTINGS, clock=clock)
 
+
 def make_service(db, clock) -> DocumentService:
     # Same fake clock as the worker: a PATCH makes the job due "now", in fake time.
     return DocumentService(DocumentRepository(db), clock=clock)
@@ -90,6 +97,7 @@ async def load(db, oid):
 
 
 # ---- happy path ------------------------------------------------------------
+
 
 async def test_document_goes_through_both_stages(db):
     clock, stages = FakeClock(), ScriptedStages()
@@ -127,6 +135,7 @@ async def test_real_simulated_stages_complete_with_zero_delay(db):
 
 # ---- failures and retries --------------------------------------------------
 
+
 async def test_enriching_failure_retries_only_enriching(db):
     clock, stages = FakeClock(), ScriptedStages(fail_enriching=1)
     worker = make_worker(db, stages, clock)
@@ -137,7 +146,9 @@ async def test_enriching_failure_retries_only_enriching(db):
     doc = await load(db, oid)
     assert doc["status"] == "enriching"
     assert doc["stages"]["enriching"] == {
-        "state": "pending", "attempts": 1, "last_error": "scripted enriching failure",
+        "state": "pending",
+        "attempts": 1,
+        "last_error": "scripted enriching failure",
     }
     assert doc["next_attempt_at"] == T0 + timedelta(seconds=2)  # backoff 2 * 2**0
 
@@ -168,7 +179,9 @@ async def test_retries_stop_at_max_attempts_and_record_failed_stage(db):
     assert doc["status"] == "failed"
     assert doc["failed_stage"] == "processing"
     assert doc["stages"]["processing"] == {
-        "state": "failed", "attempts": 3, "last_error": "scripted processing failure",
+        "state": "failed",
+        "attempts": 3,
+        "last_error": "scripted processing failure",
     }
     assert doc["stages"]["enriching"]["state"] == "pending"
     assert doc["next_attempt_at"] is None
@@ -179,6 +192,7 @@ async def test_retries_stop_at_max_attempts_and_record_failed_stage(db):
 
 
 # ---- races -----------------------------------------------------------------
+
 
 async def test_concurrent_claims_have_exactly_one_winner(db):
     oid = await insert_doc(db)
@@ -217,6 +231,7 @@ async def test_patch_during_processing_discards_the_stale_output(db):
     assert doc["result"]["content_version"] == 2
     assert doc["result"]["content_hash"] == doc["content_hash"]
     assert doc["result"]["summary"] == make_summary(new_content)
+
 
 async def test_patch_during_enriching_never_publishes_mixed_versions(db):
     clock = FakeClock()
@@ -268,7 +283,9 @@ async def test_patch_after_completion_keeps_old_result_until_new_one_is_ready(db
     assert doc["result"]["content_version"] == 2
     assert is_result_current(doc)
 
+
 # ---- crash recovery --------------------------------------------------------
+
 
 async def test_expired_lease_is_reclaimed_and_old_holder_is_fenced_out(db):
     clock = FakeClock()
@@ -322,6 +339,7 @@ async def test_crash_on_final_attempt_fails_instead_of_retrying_forever(db):
 
 
 # ---- shutdown --------------------------------------------------------------
+
 
 async def test_run_forever_stops_when_signalled(db):
     stop = asyncio.Event()

@@ -10,9 +10,11 @@ from app.schemas.documents import DocumentCreate, DocumentResponse, DocumentUpda
 def body(**overrides):
     return {"user_id": "alice", "title": "T", "content": "C", **overrides}
 
+
 def test_update_needs_at_least_one_field():
     with pytest.raises(ValidationError):
         DocumentUpdate()
+
 
 def test_strings_are_trimmed():
     data = DocumentCreate(**body(title="  T  ", content="  text  ", client_doc_ref=" ref-1 "))
@@ -30,7 +32,8 @@ def test_update_rejects_invalid_or_immutable_fields(body):
 
 def test_update_trims_like_create():
     assert DocumentUpdate(content="  text  ").content == "text"
-    
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

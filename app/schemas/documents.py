@@ -76,6 +76,7 @@ class DocumentCreate(BaseModel):
     content: Content
     client_doc_ref: ClientDocRef | None = None
 
+
 class DocumentUpdate(BaseModel):
     """Body of PATCH /documents/{id}. Send at least one field.
 

@@ -73,6 +73,7 @@ def new_document(
 
     return doc
 
+
 def content_change_fields(*, content: str, now: datetime) -> dict[str, Any]:
     """The $set part of a PATCH that changes the content (content_version is $inc'd separately).
 
@@ -100,6 +101,7 @@ def content_change_fields(*, content: str, now: datetime) -> dict[str, Any]:
         "next_attempt_at": now,
         "updated_at": now,
     }
+
 
 def is_result_current(doc: dict[str, Any]) -> bool:
     """True only if the stored result was produced from the current content.
