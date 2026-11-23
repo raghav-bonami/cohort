@@ -13,8 +13,8 @@ def new_stage() -> dict[str, Any]:
     """Fresh per-stage tracking block. Used at creation and again on every PATCH."""
     return {
         "state": StageState.PENDING.value,
-        "attempts": 0,        # incremented each time a worker starts this stage
-        "last_error": None,   # message from the most recent failed attempt
+        "attempts": 0,  # incremented each time a worker starts this stage
+        "last_error": None,  # message from the most recent failed attempt
     }
 
 
@@ -35,13 +35,11 @@ def new_document(
         "_id": ObjectId(),
         "user_id": user_id,
         "title": title,
-
         # Content and its identity. content_version is THE number every derived
         # field is compared against (see is_result_current).
         "content": content,
         "content_hash": content_hash(content),
         "content_version": 1,
-
         # Overall position (indexed) plus per-stage detail.
         "status": DocumentStatus.QUEUED.value,
         "failed_stage": None,  # None, or a StageName value once status == failed
@@ -49,15 +47,12 @@ def new_document(
             StageName.PROCESSING.value: new_stage(),
             StageName.ENRICHING.value: new_stage(),
         },
-
         # Internal hand-off from stage 1 to stage 2, labelled with the version it
         # came from. Kept when enriching fails, so processing is not redone.
         "stage1_output": None,  # {"content_version": int, "summary": str}
-
         # Published output. Summary and tags are only ever written together, in
         # one $set, with one content_version label, so they cannot disagree.
         "result": None,  # {"content_version", "content_hash", "summary", "tags", "completed_at"}
-
         # Scheduling: the earliest moment any worker may pick this document up.
         # While a worker holds it, this is the lease expiry; while waiting to
         # retry, it is the backoff time; None once completed or failed.
@@ -66,7 +61,6 @@ def new_document(
         # write includes it in its filter (fencing), so a run that lost ownership
         # cannot write.
         "lease_id": None,
-
         "created_at": now,
         "updated_at": now,
     }
