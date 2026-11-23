@@ -29,8 +29,13 @@ class DocumentService:
         self._repo = repo
         self._clock = clock
 
-    async def submit(self, *, caller_id: str, data: DocumentCreate) -> dict[str, Any]:
-        """Store a new document as queued and return it."""
+    async def submit(self, *, caller_id: str, data: DocumentCreate) -> tuple[dict[str,Any], bool]:
+        """Create a document, or replay an earlier identical submission.
+
+        Returns (document, created). created=False means an idempotent retry: the
+        same client_doc_ref with the same content was already submitted, and the
+        existing document is returned instead of creating a second one (PLAN A6).
+        """
         # The spec puts user_id in the body; the header says who is calling.
         # Submitting on someone else's behalf is refused with 403 (not 404):
         # this reveals nothing about any document, it is about the caller's own identity.
@@ -44,22 +49,41 @@ class DocumentService:
             client_doc_ref=data.client_doc_ref,
             now=self._clock(),
         )
+        ref = data.client_doc_ref
+
+        # Fast path for retries: answer from the existing document without inserting.
+        # Phase 7 relies on this: a retry must get its 200 even when the user is at
+        # the rate limit, so this check comes before the limiter.
+        if ref is not None:
+            existing = await self._repo.get_by_ref_any_owner(ref)
+            if existing is not None:
+                return _apply_crosswalk_policy(existing, caller_id, doc["content_hash"]), False
+
+        # Phase 7: content cache, then rate limit, go here
         try:
             await self._repo.insert(doc)
         except DuplicateKeyError as exc:
             if not _is_client_doc_ref_conflict(exc):
                 raise  # any other duplicate is a bug; let the 500 handler log it
-            # Interim rule. Phase 6 replaces this with the full crosswalk policy
-            # (same ref + same content = idempotent 200, different = 409 with id).
-            raise ConflictError("client_doc_ref is already in use") from exc
+            # Lost a race: another request inserted this ref between our lookup and
+            # our insert. The unique index guarantees only one of us got in, so the
+            # winner's document now exists; apply the same policy to it.
+            # (Phase 7: release the rate-limit slot reserved for `doc` here.)
+            existing = await self._repo.get_by_ref_any_owner(ref)
+            if existing is None:
+                # The index said the ref exists, but we can't read it (nothing deletes
+                # documents today, so this should be impossible). Don't guess: log and 409.
+                log.warning("crosswalk_duplicate_not_found", client_doc_ref=ref)
+                raise ConflictError("client_doc_ref is already in use") from exc
+            return _apply_crosswalk_policy(existing, caller_id, doc["content_hash"]), False
 
         log.info(
             "document_submitted",
             document_id=str(doc["_id"]),
             user_id=doc["user_id"],
-            has_client_doc_ref="client_doc_ref" in doc,
+            has_client_doc_ref=ref is not None,
         )
-        return doc
+        return doc, True
 
     async def get(self, *, caller_id: str, document_id: str) -> dict[str, Any]:
         """Return the caller's document, or raise NotFoundError.
@@ -68,6 +92,17 @@ class DocumentService:
         because the repository matches _id and user_id in one query.
         """
         doc = await self._repo.get_owned(document_id, caller_id)
+        if doc is None:
+            raise NotFoundError("Document not found")
+        return doc
+
+    async def get_by_ref(self, *, caller_id: str, client_doc_ref: str) -> dict[str, Any]:
+        """Return the caller's document with this external ref, or raise NotFoundError.
+
+        Same 404 for "no such ref" and "someone else's ref": the lookup matches
+        client_doc_ref and user_id together, exactly like get().
+        """
+        doc = await self._repo.get_owned_by_ref(client_doc_ref, caller_id)
         if doc is None:
             raise NotFoundError("Document not found")
         return doc
@@ -168,6 +203,33 @@ def _is_client_doc_ref_conflict(exc: DuplicateKeyError) -> bool:
     key_pattern = (exc.details or {}).get("keyPattern", {})
     return "client_doc_ref" in key_pattern
 
+def _apply_crosswalk_policy(
+    existing: dict[str, Any], caller_id: str, content_hash: str
+) -> dict[str, Any]:
+    """Decide what a repeated client_doc_ref means (PLAN A6).
+
+    Returns the existing document for an idempotent retry; raises ConflictError otherwise.
+    """
+    document_id = str(existing["_id"])
+
+    if existing["user_id"] != caller_id:
+        # Never reveal anything about another user's document: no id, no status.
+        log.info("crosswalk_conflict", reason="other_owner")
+        raise ConflictError("client_doc_ref is already in use")
+
+    if existing["content_hash"] != content_hash:
+        # Same ref, different content. Not treated as a new version: deliveries can
+        # arrive out of order, and an old one must not overwrite newer content.
+        # The caller owns the document, so pointing at it is safe and actionable.
+        log.info("crosswalk_conflict", reason="different_content", document_id=document_id)
+        raise ConflictError(
+            "client_doc_ref already refers to a document with different content; "
+            "PATCH that document to change its content",
+            details={"existing_document_id": document_id},
+        )
+
+    log.info("crosswalk_replay", document_id=document_id)
+    return existing
 
 def _check_precondition(expected_version: int | None, doc: dict[str, Any]) -> None:
     """412 if the client's If-Match version is no longer the current one."""

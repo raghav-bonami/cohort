@@ -162,10 +162,11 @@ class DocumentRepository:
     # ---- internal reads (never returned to a caller as-is) ---------------
 
     async def get_by_ref_any_owner(self, client_doc_ref: str) -> dict[str, Any] | None:
-        """Look up a ref regardless of owner.
+        """Look up a ref regardless of owner. Uses client_doc_ref_unique.
 
-        Only for applying the crosswalk policy after a DuplicateKeyError (Phase 6),
-        e.g. "same ref, different user, so 409". Never expose its result directly.
+        Only the crosswalk policy uses this, to tell "your own retry" from "your
+        conflicting content" from "someone else's ref". Its result is never returned
+        to a caller who does not own it.
         """
         return await self._col.find_one({"client_doc_ref": client_doc_ref})
 
