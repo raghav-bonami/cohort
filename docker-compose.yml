@@ -16,6 +16,8 @@ services:
   worker:
     build: .
     command: ["python", "-m", "app.worker.runner"]
+    restart: unless-stopped
+    stop_grace_period: 30s
     env_file:
       - path: .env
         required: false
