@@ -73,6 +73,33 @@ def new_document(
 
     return doc
 
+def content_change_fields(*, content: str, now: datetime) -> dict[str, Any]:
+    """The $set part of a PATCH that changes the content (content_version is $inc'd separately).
+
+    Lives next to new_document() so the "fresh pipeline" shape is defined in one
+    place and the two cannot drift apart.
+
+    Deliberately NOT reset: `result`. The previous result stays, still labelled with
+    the version it came from, so readers see it as stale (result_is_current = False)
+    instead of seeing nothing. The worker overwrites it when the new version completes.
+    """
+    return {
+        "content": content,
+        "content_hash": content_hash(content),
+        "status": DocumentStatus.QUEUED.value,
+        "failed_stage": None,
+        "stages": {
+            StageName.PROCESSING.value: new_stage(),
+            StageName.ENRICHING.value: new_stage(),
+        },
+        # The old summary belongs to the old content; enriching must never use it.
+        "stage1_output": None,
+        # Clearing the lease fences out any worker still running on the old version,
+        # and makes the new version claimable immediately.
+        "lease_id": None,
+        "next_attempt_at": now,
+        "updated_at": now,
+    }
 
 def is_result_current(doc: dict[str, Any]) -> bool:
     """True only if the stored result was produced from the current content.

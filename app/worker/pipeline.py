@@ -23,11 +23,7 @@ from app.worker.stages import StageError, Stages
 
 log = structlog.get_logger()
 
-Clock = Callable[[], datetime]
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
+from app.core.clock import utc_now, Clock
 
 
 class Worker:
