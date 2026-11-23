@@ -8,14 +8,12 @@ The API's reads and writes and the worker's claim and fenced transitions all liv
 here, so every query on the collection is in one file.
 """
 
-from typing import Any
-
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from bson import ObjectId
-
-from pymongo import DESCENDING , ASCENDING , ReturnDocument
+from pymongo import ASCENDING, DESCENDING, ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.db.ids import parse_object_id
@@ -28,6 +26,7 @@ NEWEST_FIRST = [("created_at", DESCENDING), ("_id", DESCENDING)]
 
 # Status values a worker may pick up (same set that counts towards the rate limit).
 _ACTIVE_VALUES = [s.value for s in ACTIVE_STATUSES]
+
 
 @dataclass(frozen=True)
 class Fence:
@@ -49,7 +48,8 @@ class Fence:
             "lease_id": self.lease_id,
             "content_version": self.content_version,
         }
-    
+
+
 class DocumentRepository:
     def __init__(self, db: AsyncDatabase) -> None:
         self._col = db[DOCUMENTS]
@@ -65,7 +65,7 @@ class DocumentRepository:
         """
         await self._col.insert_one(doc)
 
-    #---- Replacing the content ---------
+    # ---- Replacing the content ---------
     async def replace_content(
         self,
         document_id: ObjectId,
@@ -162,10 +162,11 @@ class DocumentRepository:
     # ---- internal reads (never returned to a caller as-is) ---------------
 
     async def get_by_ref_any_owner(self, client_doc_ref: str) -> dict[str, Any] | None:
-        """Look up a ref regardless of owner.
+        """Look up a ref regardless of owner. Uses client_doc_ref_unique.
 
-        Only for applying the crosswalk policy after a DuplicateKeyError (Phase 6),
-        e.g. "same ref, different user, so 409". Never expose its result directly.
+        Only the crosswalk policy uses this, to tell "your own retry" from "your
+        conflicting content" from "someone else's ref". Its result is never returned
+        to a caller who does not own it.
         """
         return await self._col.find_one({"client_doc_ref": client_doc_ref})
 

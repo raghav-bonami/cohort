@@ -60,12 +60,14 @@ async def test_submit_on_behalf_of_someone_else_is_403(client):
 
 
 async def test_duplicate_client_doc_ref_is_409(client):
-    await submit(client, client_doc_ref="ext-1")
+    first_id = await submit(client, client_doc_ref="ext-1")
     resp = await client.post(
         "/documents", json=payload(client_doc_ref="ext-1", content="other"), headers=ALICE
     )
     assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "conflict"
+    error = resp.json()["error"]
+    assert error["code"] == "conflict"
+    assert error["details"] == {"existing_document_id": first_id}
 
 
 # ---- GET /documents/{id} ----------------------------------------------------

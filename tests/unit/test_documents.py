@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 
-from app.domain.documents import is_result_current, new_document, content_change_fields
+from app.domain.documents import content_change_fields, is_result_current, new_document
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
 
 def test_content_change_resets_pipeline_but_keeps_result():
     now = datetime.now(UTC)
@@ -13,6 +14,7 @@ def test_content_change_resets_pipeline_but_keeps_result():
     assert fields["stage1_output"] is None and fields["lease_id"] is None
     assert fields["stages"]["processing"] == {"state": "pending", "attempts": 0, "last_error": None}
     assert fields["next_attempt_at"] == now
+
 
 def make(**overrides):
     args = {"user_id": "u1", "title": "t", "content": "c", "client_doc_ref": None, "now": NOW}

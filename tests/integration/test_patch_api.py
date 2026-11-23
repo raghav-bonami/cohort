@@ -54,6 +54,7 @@ async def mark_completed(db, doc_id):
 
 # ---- content changes -------------------------------------------------------
 
+
 async def test_new_content_bumps_version_requeues_and_keeps_old_result_stale(client, db):
     doc_id = await submit(client)
     await mark_completed(db, doc_id)
@@ -126,6 +127,7 @@ async def test_without_if_match_last_write_wins(client, db):
 
 # ---- If-Match ---------------------------------------------------------------
 
+
 async def test_get_returns_etag(client):
     doc_id = await submit(client)
     resp = await client.get(f"/documents/{doc_id}", headers=ALICE)
@@ -166,6 +168,7 @@ async def test_malformed_if_match_is_400(client, value):
 
 
 # ---- ownership and validation ---------------------------------------------
+
 
 async def test_foreign_document_is_404_even_with_stale_if_match(client):
     doc_id = await submit(client)

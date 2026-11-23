@@ -7,6 +7,7 @@ same atomic claim, so adding workers never causes double processing.
 
 import asyncio
 import signal
+
 import structlog
 
 from app.core.config import get_settings
@@ -19,6 +20,7 @@ from app.worker.stages import SimulatedStages
 
 log = structlog.get_logger()
 
+
 def _install_signal_handlers(stop: asyncio.Event) -> None:
     """SIGTERM (docker stop) and SIGINT (Ctrl+C) ask the loops to finish and exit."""
     loop = asyncio.get_running_loop()
@@ -29,7 +31,6 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
             # Windows event loops don't support this. Containers run on Linux, where
             # it works; locally on Windows, Ctrl+C still stops the process.
             log.info("signal_handler_unavailable", signal=sig.name)
-
 
 
 async def main() -> None:

@@ -1,6 +1,7 @@
 """Error response models. Used only to document error shapes in OpenAPI (/docs)."""
 
 from pydantic import BaseModel
+from typing import Any
 
 
 class ErrorDetail(BaseModel):
@@ -13,7 +14,7 @@ class ErrorBody(BaseModel):
     code: str
     message: str
     request_id: str | None
-    details: list[ErrorDetail] | None = None
+    details: list[ErrorDetail] | dict[str, Any] | None = None
 
 
 class ErrorResponse(BaseModel):
