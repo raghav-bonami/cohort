@@ -13,7 +13,7 @@ the OpenAPI schema, so they should not change per environment.
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
 from app.domain.documents import is_result_current
 from app.domain.enums import DocumentStatus, StageName, StageState
@@ -75,6 +75,25 @@ class DocumentCreate(BaseModel):
     title: Title
     content: Content
     client_doc_ref: ClientDocRef | None = None
+
+class DocumentUpdate(BaseModel):
+    """Body of PATCH /documents/{id}. Send at least one field.
+
+    user_id and client_doc_ref are not here on purpose: ownership and the external
+    reference are identity, not editable data. extra="forbid" turns an attempt to
+    change them into a 422 instead of a silent ignore.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: Title | None = None
+    content: Content | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "DocumentUpdate":
+        if self.title is None and self.content is None:
+            raise ValueError("provide at least one of: title, content")
+        return self
 
 
 # ---- responses -------------------------------------------------------------

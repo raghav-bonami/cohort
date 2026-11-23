@@ -51,6 +51,15 @@ class ConflictError(AppError):
     status_code = 409  # request clashes with existing state (duplicate client_doc_ref)
     code = "conflict"
 
+class BadRequestError(AppError):
+    status_code = 400  # a header we parse ourselves is malformed (e.g. If-Match)
+    code = "bad_request"
+
+
+class PreconditionFailedError(AppError):
+    status_code = 412  # If-Match named a content_version that is no longer current
+    code = "precondition_failed"
+
 
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
     # request_id was bound by request_id_middleware for this request's context.

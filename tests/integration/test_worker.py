@@ -9,6 +9,8 @@ from app.domain.documents import is_result_current, new_document, new_stage
 from app.domain.enums import StageName
 from app.repositories.document_repo import DocumentRepository, Fence
 from app.services.hashing import content_hash
+from app.schemas.documents import DocumentUpdate
+from app.services.document_service import DocumentService
 from app.worker.pipeline import Worker
 from app.worker.stages import SimulatedStages, StageError, make_summary, make_tags
 
@@ -36,10 +38,11 @@ class FakeClock:
 class ScriptedStages:
     """Stages double: fails the first N calls, counts calls, can run a hook mid-stage."""
 
-    def __init__(self, *, fail_processing=0, fail_enriching=0, during_processing=None):
+    def __init__(self, *, fail_processing=0, fail_enriching=0, during_processing=None,during_enriching=None):
         self.fail = {"processing": fail_processing, "enriching": fail_enriching}
         self.calls = {"processing": 0, "enriching": 0}
         self.during_processing = during_processing
+        self.during_enriching = during_enriching
 
     async def processing(self, content: str) -> str:
         self.calls["processing"] += 1
@@ -51,6 +54,8 @@ class ScriptedStages:
 
     async def enriching(self, summary: str) -> list[str]:
         self.calls["enriching"] += 1
+        if self.during_enriching is not None:
+            await self.during_enriching()
         if self.calls["enriching"] <= self.fail["enriching"]:
             raise StageError("scripted enriching failure")
         return make_tags(summary)
@@ -64,6 +69,20 @@ async def insert_doc(db, content="mongo redis fastapi worker lease fencing retri
 
 def make_worker(db, stages, clock) -> Worker:
     return Worker(DocumentRepository(db), stages, SETTINGS, clock=clock)
+
+def make_service(db, clock) -> DocumentService:
+    # Same fake clock as the worker: a PATCH makes the job due "now", in fake time.
+    return DocumentService(DocumentRepository(db), clock=clock)
+
+
+async def patch_content(service, oid, content):
+    """A real PATCH through the service, exactly what the API would do."""
+    return await service.update(
+        caller_id="u1",
+        document_id=str(oid),
+        data=DocumentUpdate(content=content),
+        expected_version=None,
+    )
 
 
 async def load(db, oid):
@@ -177,29 +196,11 @@ async def test_concurrent_claims_have_exactly_one_winner(db):
 
 async def test_patch_during_processing_discards_the_stale_output(db):
     clock = FakeClock()
+    service = make_service(db, clock)
     oid = await insert_doc(db, content="original content about mongo")
     new_content = "replacement content about redis"
 
-    async def simulate_patch():
-        # What PATCH (Phase 5) will do, applied while the worker is mid-stage.
-        await db[DOCUMENTS].update_one(
-            {"_id": oid},
-            {
-                "$set": {
-                    "content": new_content,
-                    "content_hash": content_hash(new_content),
-                    "status": "queued",
-                    "lease_id": None,
-                    "next_attempt_at": clock.now,
-                    "stage1_output": None,
-                    "stages.processing": new_stage(),
-                    "stages.enriching": new_stage(),
-                },
-                "$inc": {"content_version": 1},
-            },
-        )
-
-    stages = ScriptedStages(during_processing=simulate_patch)
+    stages = ScriptedStages(during_processing=lambda: patch_content(service, oid, new_content))
     worker = make_worker(db, stages, clock)
 
     await worker.run_once()  # ran on v1; PATCH landed mid-run; the v1 write is fenced out
@@ -214,9 +215,58 @@ async def test_patch_during_processing_discards_the_stale_output(db):
     doc = await load(db, oid)
     assert doc["status"] == "completed"
     assert doc["result"]["content_version"] == 2
-    assert doc["result"]["content_hash"] == content_hash(new_content)
+    assert doc["result"]["content_hash"] == doc["content_hash"]
     assert doc["result"]["summary"] == make_summary(new_content)
 
+async def test_patch_during_enriching_never_publishes_mixed_versions(db):
+    clock = FakeClock()
+    service = make_service(db, clock)
+    oid = await insert_doc(db, content="first draft about mongo indexes")
+    new_content = "second draft about redis caching"
+    stages = ScriptedStages()
+    worker = make_worker(db, stages, clock)
+
+    await worker.run_once()  # processing v1 succeeds
+    stages.during_enriching = lambda: patch_content(service, oid, new_content)
+    await worker.run_once()  # enriching v1; PATCH lands mid-stage; v1 tags are fenced out
+
+    doc = await load(db, oid)
+    assert doc["content_version"] == 2
+    assert doc["status"] == "queued"
+    assert doc["result"] is None  # no v1 tags were published
+    assert doc["stage1_output"] is None  # the v1 summary can't be reused for v2
+
+    stages.during_enriching = None
+    await worker.run_once()
+    await worker.run_once()
+    doc = await load(db, oid)
+    # Summary and tags both come from v2: never a v1 summary with v2 tags or vice versa.
+    assert doc["result"]["content_version"] == 2
+    assert doc["result"]["summary"] == make_summary(new_content)
+    assert doc["result"]["tags"] == make_tags(make_summary(new_content))
+    assert stages.calls == {"processing": 2, "enriching": 2}
+
+
+async def test_patch_after_completion_keeps_old_result_until_new_one_is_ready(db):
+    clock = FakeClock()
+    service = make_service(db, clock)
+    worker = make_worker(db, ScriptedStages(), clock)
+    oid = await insert_doc(db, content="first draft about mongo indexes")
+    await worker.run_once()
+    await worker.run_once()
+    v1_result = (await load(db, oid))["result"]
+
+    await patch_content(service, oid, "second draft about redis caching")
+    doc = await load(db, oid)
+    assert doc["status"] == "queued" and doc["content_version"] == 2
+    assert doc["result"] == v1_result  # old result kept, still labelled v1
+    assert not is_result_current(doc)  # ...and therefore reported as stale
+
+    await worker.run_once()
+    await worker.run_once()
+    doc = await load(db, oid)
+    assert doc["result"]["content_version"] == 2
+    assert is_result_current(doc)
 
 # ---- crash recovery --------------------------------------------------------
 

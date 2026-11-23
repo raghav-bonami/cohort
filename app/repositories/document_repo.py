@@ -4,7 +4,8 @@ Routers and services never touch Mongo directly. Two
 benefits: each query sits next to the index it relies on, and the ownership
 rule (filter by user_id) is enforced in one place.
 
-Will covers the API's reads and writes. Later add their own methods
+The API's reads and writes and the worker's claim and fenced transitions all live
+here, so every query on the collection is in one file.
 """
 
 from typing import Any
@@ -63,6 +64,55 @@ class DocumentRepository:
         so the service layer decides it.
         """
         await self._col.insert_one(doc)
+
+    #---- Replacing the content ---------
+    async def replace_content(
+        self,
+        document_id: ObjectId,
+        user_id: str,
+        *,
+        changes: dict[str, Any],
+        expected_version: int | None,
+    ) -> dict[str, Any] | None:
+        """PATCH with new content: one atomic update, or None if it did not apply.
+        The filter carries every condition, so nothing can change between the check
+        and the write:
+        - content_hash != new hash: identical content is never re-versioned, even when
+        two identical PATCHes race;
+        - content_version == expected_version, only when the client sent If-Match.
+        None means one of those conditions failed; the service re-reads to tell which.
+        """
+        query: dict[str, Any] = {
+            "_id": document_id,
+            "user_id": user_id,
+            "content_hash": {"$ne": changes["content_hash"]},
+        }
+        if expected_version is not None:
+            query["content_version"] = expected_version
+        return await self._col.find_one_and_update(
+            query,
+            {"$set": changes, "$inc": {"content_version": 1}},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def update_title(
+        self,
+        document_id: ObjectId,
+        user_id: str,
+        *,
+        title: str,
+        now: datetime,
+        expected_version: int | None,
+    ) -> dict[str, Any] | None:
+        """Rename only. The title is not pipeline input, so no version bump, no requeue."""
+        query: dict[str, Any] = {"_id": document_id, "user_id": user_id}
+        if expected_version is not None:
+            query["content_version"] = expected_version
+        return await self._col.find_one_and_update(
+            query,
+            {"$set": {"title": title, "updated_at": now}},
+            return_document=ReturnDocument.AFTER,
+        )
 
     # ---- owner-scoped reads (used by the API) ----------------------------
 
