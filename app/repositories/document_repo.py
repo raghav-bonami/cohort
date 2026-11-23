@@ -9,18 +9,46 @@ Will covers the API's reads and writes. Later add their own methods
 
 from typing import Any
 
-from pymongo import DESCENDING
+from dataclasses import dataclass
+from datetime import datetime
+
+from bson import ObjectId
+
+from pymongo import DESCENDING , ASCENDING , ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.db.ids import parse_object_id
 from app.db.mongo import DOCUMENTS
-from app.domain.enums import ACTIVE_STATUSES, DocumentStatus
+from app.domain.enums import ACTIVE_STATUSES, DocumentStatus, StageName, StageState
 
 # "Newest first", with _id as tie-breaker. Matches both listing indexes exactly,
 # so Mongo reads the index in order and never sorts in memory.
 NEWEST_FIRST = [("created_at", DESCENDING), ("_id", DESCENDING)]
 
+# Status values a worker may pick up (same set that counts towards the rate limit).
+_ACTIVE_VALUES = [s.value for s in ACTIVE_STATUSES]
 
+@dataclass(frozen=True)
+class Fence:
+    """One worker's claim on one version of one document.
+
+    Every worker write filters on all three fields. If any of them changed since the
+    claim - a PATCH bumped content_version, or the lease expired and another worker
+    re-claimed (new lease_id) - the write matches 0 documents and is discarded.
+    That is what stops an old run from ever publishing over newer content.
+    """
+
+    document_id: ObjectId
+    lease_id: str
+    content_version: int
+
+    def as_filter(self) -> dict[str, Any]:
+        return {
+            "_id": self.document_id,
+            "lease_id": self.lease_id,
+            "content_version": self.content_version,
+        }
+    
 class DocumentRepository:
     def __init__(self, db: AsyncDatabase) -> None:
         self._col = db[DOCUMENTS]
@@ -92,12 +120,9 @@ class DocumentRepository:
         return await self._col.find_one({"client_doc_ref": client_doc_ref})
 
     async def count_active(self, user_id: str) -> int:
-        """Rate-limit fallback when Redis is down (PLAN A7).
-
-        Mongo is the source of truth for status. Served by user_status_created.
-        """
+        """Rate-limit fallback when Redis is down. Served by user_status_created."""
         return await self._col.count_documents(
-            {"user_id": user_id, "status": {"$in": [s.value for s in ACTIVE_STATUSES]}}
+            {"user_id": user_id, "status": {"$in": _ACTIVE_VALUES}}
         )
 
     async def find_result_by_hash(self, content_hash: str) -> dict[str, Any] | None:
@@ -113,6 +138,156 @@ class DocumentRepository:
             projection={"_id": 0, "result": 1},
         )
         return doc["result"] if doc else None
+
+        # ---- worker: claim and fenced stage transitions ------------------------
+
+    async def claim_next(
+        self, *, now: datetime, lease_id: str, lease_until: datetime
+    ) -> dict[str, Any] | None:
+        """Atomically take the oldest due job, or return None if nothing is due.
+
+        "Due" = active status and next_attempt_at <= now. That covers new documents,
+        retries whose backoff has passed, and jobs whose previous lease expired
+        (crashed worker), all with one condition, served by the claim_queue index.
+
+        find_one_and_update is a single atomic operation on a single document: when
+        several workers race for the same job, exactly one update applies. Setting
+        next_attempt_at to the lease expiry is what makes the job invisible to the
+        others until then.
+        """
+        return await self._col.find_one_and_update(
+            {"status": {"$in": _ACTIVE_VALUES}, "next_attempt_at": {"$lte": now}},
+            {"$set": {"lease_id": lease_id, "next_attempt_at": lease_until, "updated_at": now}},
+            sort=[("next_attempt_at", ASCENDING)],
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def start_stage(self, fence: Fence, stage: StageName, *, now: datetime) -> bool:
+        """Mark the stage running and count the attempt. Status moves queued -> processing."""
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    "status": stage.value,
+                    f"stages.{stage.value}.state": StageState.RUNNING.value,
+                    "updated_at": now,
+                },
+                "$inc": {f"stages.{stage.value}.attempts": 1},
+            },
+        )
+
+    async def complete_processing(self, fence: Fence, *, summary: str, now: datetime) -> bool:
+        """Stage 1 done: keep the summary, labelled with its version, and hand over to stage 2.
+
+        stage1_output is kept even if enriching later fails, so processing is never redone.
+        The lease is released and the job is due immediately: enriching is claimed as
+        its own job, by this worker or any other.
+        """
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    "stage1_output": {"content_version": fence.content_version, "summary": summary},
+                    "stages.processing.state": StageState.SUCCEEDED.value,
+                    "stages.processing.last_error": None,
+                    "status": DocumentStatus.ENRICHING.value,
+                    "lease_id": None,
+                    "next_attempt_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def complete_enriching(
+        self,
+        fence: Fence,
+        *,
+        content_hash: str,
+        summary: str,
+        tags: list[str],
+        now: datetime,
+    ) -> bool:
+        """Stage 2 done: publish summary + tags together.
+
+        One $set on one document is atomic in MongoDB, so a reader sees the whole new
+        result or none of it - never new tags next to an old summary. The result is
+        labelled with the version and hash of the content it was computed from.
+        """
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    "result": {
+                        "content_version": fence.content_version,
+                        "content_hash": content_hash,
+                        "summary": summary,
+                        "tags": tags,
+                        "completed_at": now,
+                    },
+                    "stages.enriching.state": StageState.SUCCEEDED.value,
+                    "stages.enriching.last_error": None,
+                    "status": DocumentStatus.COMPLETED.value,
+                    "failed_stage": None,
+                    "lease_id": None,
+                    "next_attempt_at": None,  # terminal: never claimable again
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def schedule_retry(
+        self,
+        fence: Fence,
+        stage: StageName,
+        *,
+        error: str,
+        retry_at: datetime,
+        now: datetime,
+    ) -> bool:
+        """Attempt failed, retries left: release the job and make it due again at retry_at.
+
+        Status stays processing/enriching; the stage shows state=pending, its attempt
+        count and the last error, so a caller can see it is waiting to retry.
+        """
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    f"stages.{stage.value}.state": StageState.PENDING.value,
+                    f"stages.{stage.value}.last_error": error,
+                    "lease_id": None,
+                    "next_attempt_at": retry_at,
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def fail_stage(
+        self, fence: Fence, stage: StageName, *, error: str, now: datetime
+    ) -> bool:
+        """Out of attempts: terminal failure, recording exactly which stage failed."""
+        return await self._fenced(
+            fence,
+            {
+                "$set": {
+                    f"stages.{stage.value}.state": StageState.FAILED.value,
+                    f"stages.{stage.value}.last_error": error,
+                    "status": DocumentStatus.FAILED.value,
+                    "failed_stage": stage.value,
+                    "lease_id": None,
+                    "next_attempt_at": None,
+                    "updated_at": now,
+                }
+            },
+        )
+
+    async def _fenced(self, fence: Fence, update: dict[str, Any]) -> bool:
+        """Apply an update only if this worker still owns this version of the document.
+
+        Returns False when the fence rejected the write (0 documents matched).
+        """
+        result = await self._col.update_one(fence.as_filter(), update)
+        return result.matched_count == 1
 
     # ---- helpers ---------------------------------------------------------
 
