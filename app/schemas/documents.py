@@ -36,14 +36,18 @@ IDENTIFIER_PATTERN = r"^[A-Za-z0-9._:-]+$"
 UserId = Annotated[
     str,
     StringConstraints(
-        strip_whitespace=True, min_length=1, max_length=MAX_USER_ID_CHARS,
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_USER_ID_CHARS,
         pattern=IDENTIFIER_PATTERN,
     ),
 ]
 ClientDocRef = Annotated[
     str,
     StringConstraints(
-        strip_whitespace=True, min_length=1, max_length=MAX_REF_CHARS,
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_REF_CHARS,
         pattern=IDENTIFIER_PATTERN,
     ),
 ]
@@ -58,6 +62,7 @@ Content = Annotated[
 
 
 # ---- requests --------------------------------------------------------------
+
 
 class DocumentCreate(BaseModel):
     """Body of POST /documents."""
@@ -76,6 +81,7 @@ class DocumentCreate(BaseModel):
 # Every response model is built field by field from the stored document
 # (never **doc), so internal fields - lease_id, next_attempt_at, stage1_output,
 # the full content - can never leak into a response by accident.
+
 
 class SubmitResponse(BaseModel):
     """Body of POST /documents (201)."""

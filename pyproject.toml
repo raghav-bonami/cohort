@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 asyncio_mode = "auto"                        # async def tests run without decorators
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
@@ -17,5 +18,7 @@ target-version = "py312"
 # BLE: blind `except Exception` (the PDF lists `except Exception: pass` as a pitfall)
 select = ["E", "F", "I", "B", "UP", "BLE"]
 
-pythonpath = ["."]
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency markers are designed to be used as defaults.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header"]
 

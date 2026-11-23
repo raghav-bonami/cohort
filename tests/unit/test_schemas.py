@@ -19,13 +19,13 @@ def test_strings_are_trimmed():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"content": "   "},                 # whitespace only = empty
+        {"content": "   "},  # whitespace only = empty
         {"title": ""},
-        {"content": "x" * 100_001},          # over MAX_CONTENT_CHARS
-        {"client_doc_ref": "a/b"},           # "/" would break the by-ref path
+        {"content": "x" * 100_001},  # over MAX_CONTENT_CHARS
+        {"client_doc_ref": "a/b"},  # "/" would break the by-ref path
         {"client_doc_ref": "a b"},
         {"user_id": "alice!"},
-        {"status": "completed"},             # unknown field (extra="forbid")
+        {"status": "completed"},  # unknown field (extra="forbid")
     ],
 )
 def test_invalid_input_is_rejected(overrides):
@@ -35,7 +35,10 @@ def test_invalid_input_is_rejected(overrides):
 
 def test_response_never_exposes_internal_fields():
     doc = new_document(
-        user_id="alice", title="T", content="secret text", client_doc_ref=None,
+        user_id="alice",
+        title="T",
+        content="secret text",
+        client_doc_ref=None,
         now=datetime.now(UTC),
     )
     dumped = DocumentResponse.from_doc(doc).model_dump()

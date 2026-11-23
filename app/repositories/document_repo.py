@@ -73,10 +73,7 @@ class DocumentRepository:
         """
         query = self._user_query(user_id, status)
         cursor = (
-            self._col.find(query)
-            .sort(NEWEST_FIRST)
-            .skip((page - 1) * page_size)
-            .limit(page_size)
+            self._col.find(query).sort(NEWEST_FIRST).skip((page - 1) * page_size).limit(page_size)
         )
         return await cursor.to_list(length=page_size)
 

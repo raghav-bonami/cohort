@@ -16,8 +16,11 @@ T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
 def make(user_id="u1", ref=None, minutes=0, content="c"):
     return new_document(
-        user_id=user_id, title="t", content=content,
-        client_doc_ref=ref, now=T0 + timedelta(minutes=minutes),
+        user_id=user_id,
+        title="t",
+        content=content,
+        client_doc_ref=ref,
+        now=T0 + timedelta(minutes=minutes),
     )
 
 
@@ -41,6 +44,7 @@ def index_names_used(explain: dict) -> set[str]:
 
 # ---- ownership -----------------------------------------------------------
 
+
 async def test_owner_can_read(db):
     repo = DocumentRepository(db)
     doc = make()
@@ -54,11 +58,12 @@ async def test_other_user_missing_and_malformed_all_look_the_same(db):
     await repo.insert(doc)
 
     assert await repo.get_owned(str(doc["_id"]), "intruder") is None  # someone else's
-    assert await repo.get_owned(str(ObjectId()), "owner") is None     # does not exist
-    assert await repo.get_owned("not-an-id", "owner") is None         # malformed
+    assert await repo.get_owned(str(ObjectId()), "owner") is None  # does not exist
+    assert await repo.get_owned("not-an-id", "owner") is None  # malformed
 
 
 # ---- crosswalk uniqueness ------------------------------------------------
+
 
 async def test_duplicate_ref_is_rejected_by_the_index(db):
     repo = DocumentRepository(db)
@@ -89,6 +94,7 @@ async def test_by_ref_uses_the_index_not_a_collection_scan(db):
 
 # ---- listing -------------------------------------------------------------
 
+
 async def test_list_is_newest_first_and_paginated(db):
     repo = DocumentRepository(db)
     docs = [make(minutes=i) for i in range(5)]
@@ -108,10 +114,12 @@ async def test_list_filters_by_status_and_owner(db):
     done = make()
     done["status"] = DocumentStatus.COMPLETED.value
     await repo.insert(done)
-    await repo.insert(make())                     # queued
+    await repo.insert(make())  # queued
     await repo.insert(make(user_id="someone-else"))
 
-    completed = await repo.list_for_user("u1", status=DocumentStatus.COMPLETED, page=1, page_size=10)
+    completed = await repo.list_for_user(
+        "u1", status=DocumentStatus.COMPLETED, page=1, page_size=10
+    )
     assert [d["_id"] for d in completed] == [done["_id"]]
 
 

@@ -1,6 +1,6 @@
 # Cohort Insights API: Implementation Plan
 
-This is the plan for the take-home assignment. The interviewer says they're mostly grading the design: staleness, crosswalk, race conditions, and the "At 100×" section. So the order is: decide the design first, then write code, then write tests that prove the design works. Each decision comes with a short reason, because you'll have to defend all of it live.
+This is the plan for the assignment. The interviewer says they're mostly grading the design: staleness, crosswalk, race conditions, and the "At 100×" section. So the order is: decide the design first, then write code, then write tests that prove the design works. Each decision comes with a short reason, because you'll have to defend all of it live.
 
 ---
 
@@ -8,15 +8,15 @@ This is the plan for the take-home assignment. The interviewer says they're most
 
 ### A1. Stack
 
-| Concern | Choice | Why |
-|---|---|---|
-| API | FastAPI + Pydantic v2 + `pydantic-settings` | Required; settings come from environment variables |
-| Mongo driver | `pymongo` async (`AsyncMongoClient`) | Motor is deprecated; PyMongo's native async client replaces it |
-| Redis | `redis.asyncio` | Used for rate limiting and the content cache |
-| Worker | Separate container; MongoDB is the queue (atomic claim with a lease) | Mongo already holds the state, so there's no second source of truth. It still works if Redis is down, and `--scale worker=3` is an easy way to show race handling |
-| Logging | `structlog`, JSON output | Structured logs |
-| Tests | `pytest`, `pytest-asyncio`, `httpx.AsyncClient` | Integration tests run against real Mongo and Redis in compose |
-| Tooling | `uv` or `pip` + `ruff` | Keeps the codebase clean |
+| Concern      | Choice                                                               | Why                                                                                                                                                                 |
+| ------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API          | FastAPI + Pydantic v2 + `pydantic-settings`                        | Required; settings come from environment variables                                                                                                                  |
+| Mongo driver | `pymongo` async (`AsyncMongoClient`)                             | Motor is deprecated; PyMongo's native async client replaces it                                                                                                      |
+| Redis        | `redis.asyncio`                                                    | Used for rate limiting and the content cache                                                                                                                        |
+| Worker       | Separate container; MongoDB is the queue (atomic claim with a lease) | Mongo already holds the state, so there's no second source of truth. It still works if Redis is down, and `--scale worker=3` is an easy way to show race handling |
+| Logging      | `structlog`, JSON output                                           | Structured logs                                                                                                                                                     |
+| Tests        | `pytest`, `pytest-asyncio`, `httpx.AsyncClient`                | Integration tests run against real Mongo and Redis in compose                                                                                                       |
+| Tooling      | `uv` or `pip` + `ruff`                                         | Keeps the codebase clean                                                                                                                                            |
 
 ### A2. Identity and ownership
 
@@ -113,13 +113,13 @@ A reader works it out with a comparison, not a guessed boolean: `result_is_curre
 
 ### A10. Indexes (list these in the README)
 
-| Index | Serves |
-|---|---|
-| `{user_id:1, created_at:-1, _id:-1}` | Listing, newest first |
+| Index                                    | Serves                                          |
+| ---------------------------------------- | ----------------------------------------------- |
+| `{user_id:1, created_at:-1, _id:-1}`   | Listing, newest first                           |
 | `{user_id:1, status:1, created_at:-1}` | Listing with status filter; rate-limit fallback |
-| `{client_doc_ref:1}` unique, partial | by-ref lookup and uniqueness |
-| `{"result.content_hash":1}` | Cache fallback |
-| `{status:1, next_attempt_at:1}` | Worker claim query |
+| `{client_doc_ref:1}` unique, partial   | by-ref lookup and uniqueness                    |
+| `{"result.content_hash":1}`            | Cache fallback                                  |
+| `{status:1, next_attempt_at:1}`        | Worker claim query                              |
 
 ---
 
@@ -151,7 +151,6 @@ A reader works it out with a comparison, not a guessed boolean: `result_is_curre
    tests/{unit,integration}/  conftest.py
    Dockerfile  docker-compose.yml  .env.example  README.md  Makefile
    ```
-
 2. Settings class using `pydantic-settings`, plus `.env.example` with every variable documented.
 3. JSON logging and a request-ID middleware.
 4. `GET /health`, which pings Mongo and Redis and returns 200 or 503 with details for each.
@@ -223,11 +222,13 @@ Optionally add a GitHub Actions workflow that runs these. **Commit.**
 
 1. **A user with 500K documents:** the B-tree indexes still work for queries that start with `user_id`. What breaks is deep `skip`, which walks every skipped index entry, and `count_documents` for totals, which scans the user's whole range. The status filter has few distinct values, so it narrows little. One "whale" user also becomes a hot spot.
 2. **Shard key:** `{user_id: 1, _id: 1}` (or `created_at` instead of `_id`), **not `user_id` alone.** With `user_id` alone, all of a whale's documents share one key value, so they land in a jumbo chunk that can't be split and that shard gets hot. The compound key keeps listing queries targeted to one shard and still allows splitting. Two consequences:
+
    - The by-ref lookup becomes scatter-gather across shards.
    - Mongo only enforces unique indexes that include the shard key, so `client_doc_ref` uniqueness can't be enforced on the main collection anymore.
 
    The fix for both is a separate crosswalk collection `doc_refs {_id: client_doc_ref, user_id, document_id}`, sharded by hashed ref.
 3. **Redis rate limiter at 100× QPS:** each check is O(1) on one key, so Redis Cluster spreads users across nodes. The remaining risks:
+
    - A whale user's key becomes hot.
    - Each call is a network round-trip.
    - Failover can lose recent writes, so the sets drift from reality.
