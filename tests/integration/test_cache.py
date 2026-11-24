@@ -3,8 +3,10 @@
 from datetime import UTC, datetime
 
 import pytest
+from pymongo.errors import ServerSelectionTimeoutError
 
 from app.db.mongo import DOCUMENTS
+from app.db.redis import create_redis_client
 from app.domain.documents import new_document
 from app.services.hashing import content_hash
 from app.services.result_cache import ResultCache
@@ -112,3 +114,17 @@ async def test_redis_down_falls_back_to_mongo(make_client, db, seed_mongo):
         resp = await submit(http)
     assert resp.status_code == 201
     assert resp.json()["status"] == ("completed" if seed_mongo else "queued")
+
+
+async def test_cache_gives_up_quietly_when_redis_and_mongo_are_both_down():
+    class MongoDown:
+        async def find_result_by_hash(self, content_hash):
+            raise ServerSelectionTimeoutError("simulated outage")
+
+    dead = create_redis_client(DEAD_REDIS_URL)
+    cache = ResultCache(dead, MongoDown(), ttl_seconds=60)
+    try:
+        assert await cache.get(content_hash(TEXT)) is None  # miss: process normally
+        await cache.put(content_hash(TEXT), summary="s", tags=[])  # logged, never raised
+    finally:
+        await dead.aclose()

@@ -15,7 +15,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 # E/F: errors, I: import order, B: bug-prone patterns, UP: modern syntax,
-# BLE: blind `except Exception` (the PDF lists `except Exception: pass` as a pitfall)
+# BLE: no blind `except Exception` - every fallback is explicit and logged
 select = ["E", "F", "I", "B", "UP", "BLE"]
 
 [tool.ruff.lint.flake8-bugbear]

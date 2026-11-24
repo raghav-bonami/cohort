@@ -76,6 +76,12 @@ async def db(mongo_client):
 
 
 @pytest.fixture
+def test_settings():
+    """Settings pointing at the test database and the test Redis DB."""
+    return Settings(mongo_url=MONGO_URL, mongo_db=TEST_DB, redis_url=REDIS_TEST_URL)
+
+
+@pytest.fixture
 def make_client(mongo_client, redis_client):
     """Factory: an HTTP client for the real app with chosen settings overrides.
 
