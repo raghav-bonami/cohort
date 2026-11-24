@@ -4,9 +4,11 @@ Layering: routers translate HTTP <-> Python, the repository translates Python <-
 and this service decides what is allowed. It raises AppError subclasses and never
 touches HTTP objects, so it can be unit-tested without FastAPI.
 
-Later phases add their rules here:
-- submit(): content cache (7) -> rate limit (7) -> insert -> crosswalk policy (6)
-- update(): content cache and rate limit (7) when new content re-enters the pipeline
+Order inside submit():  crosswalk retry -> content cache -> rate limit -> insert.
+- A retry never consumes a slot and still succeeds when the user is at the limit.
+- A cache hit completes immediately, so it never consumes a slot either.
+- A slot is reserved for the exact document id before the insert, and given back if
+  the insert does not happen.
 """
 
 from typing import Any
@@ -16,18 +18,31 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.clock import Clock, utc_now
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError, PreconditionFailedError
-from app.domain.documents import content_change_fields, new_document
-from app.domain.enums import DocumentStatus
+from app.domain.documents import apply_cached_result, content_change_fields, new_document
+from app.domain.enums import ACTIVE_STATUSES, DocumentStatus
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.documents import DocumentCreate, DocumentUpdate
+from app.services.rate_limiter import ActiveDocumentLimiter
+from app.services.result_cache import ResultCache
 
 log = structlog.get_logger()
 
 
 class DocumentService:
-    def __init__(self, repo: DocumentRepository, clock: Clock = utc_now) -> None:
+    def __init__(
+        self,
+        repo: DocumentRepository,
+        clock: Clock = utc_now,
+        *,
+        limiter: ActiveDocumentLimiter | None = None,
+        cache: ResultCache | None = None,
+    ) -> None:
+        """limiter/cache = None disables that feature. Production wiring (deps.py)
+        always passes both; tests that focus on other rules leave them out."""
         self._repo = repo
         self._clock = clock
+        self._limiter = limiter
+        self._cache = cache
 
     async def submit(self, *, caller_id: str, data: DocumentCreate) -> tuple[dict[str, Any], bool]:
         """Create a document, or replay an earlier identical submission.
@@ -49,26 +64,43 @@ class DocumentService:
             client_doc_ref=data.client_doc_ref,
             now=self._clock(),
         )
-        ref = data.client_doc_ref
 
-        # Fast path for retries: answer from the existing document without inserting.
-        # Phase 7 relies on this: a retry must get its 200 even when the user is at
-        # the rate limit, so this check comes before the limiter.
-        if ref is not None:
-            existing = await self._repo.get_by_ref_any_owner(ref)
+        # 1. Crosswalk fast path: a retry is answered from the existing document. It
+        #    comes first so a retry still gets its 200 when the user is at the limit.
+        if data.client_doc_ref is not None:
+            existing = await self._repo.get_by_ref_any_owner(data.client_doc_ref)
             if existing is not None:
                 return _apply_crosswalk_policy(existing, caller_id, doc["content_hash"]), False
 
-        # Phase 7: content cache, then rate limit, go here
+        # 2. Content cache: this exact content was processed before. Store the document
+        #    already completed; it never enters the queue and never takes a slot.
+        cached = await self._cache.get(doc["content_hash"]) if self._cache else None
+        if cached is not None:
+            apply_cached_result(
+                doc, summary=cached.summary, tags=cached.tags, now=doc["created_at"]
+            )
+            return await self._insert(doc, caller_id, holds_slot=False)
+
+        # 3. Rate limit: reserve a slot for this exact id (it exists before the insert).
+        if self._limiter is not None:
+            await self._limiter.acquire(caller_id, str(doc["_id"]))  # 429 when at the limit
+        return await self._insert(doc, caller_id, holds_slot=self._limiter is not None)
+
+    async def _insert(
+        self, doc: dict[str, Any], caller_id: str, *, holds_slot: bool
+    ) -> tuple[dict[str, Any], bool]:
+        """Insert; on a duplicate client_doc_ref apply the crosswalk policy instead."""
+        ref = doc.get("client_doc_ref")
+        inserted = False
         try:
             await self._repo.insert(doc)
+            inserted = True
         except DuplicateKeyError as exc:
             if not _is_client_doc_ref_conflict(exc):
                 raise  # any other duplicate is a bug; let the 500 handler log it
             # Lost a race: another request inserted this ref between our lookup and
             # our insert. The unique index guarantees only one of us got in, so the
             # winner's document now exists; apply the same policy to it.
-            # (Phase 7: release the rate-limit slot reserved for `doc` here.)
             existing = await self._repo.get_by_ref_any_owner(ref)
             if existing is None:
                 # The index said the ref exists, but we can't read it (nothing deletes
@@ -76,12 +108,18 @@ class DocumentService:
                 log.warning("crosswalk_duplicate_not_found", client_doc_ref=ref)
                 raise ConflictError("client_doc_ref is already in use") from exc
             return _apply_crosswalk_policy(existing, caller_id, doc["content_hash"]), False
+        finally:
+            # Anything other than a successful insert (duplicate ref, Mongo error, the
+            # request being cancelled) means this document will never be processed.
+            if holds_slot and not inserted and self._limiter is not None:
+                await self._limiter.release(caller_id, str(doc["_id"]))
 
         log.info(
             "document_submitted",
             document_id=str(doc["_id"]),
             user_id=doc["user_id"],
             has_client_doc_ref=ref is not None,
+            from_cache=doc["status"] == DocumentStatus.COMPLETED.value,
         )
         return doc, True
 
@@ -136,23 +174,31 @@ class DocumentService:
             if changes["content_hash"] != current["content_hash"]:
                 if data.title is not None:
                     changes["title"] = data.title
+                slot_id = str(current["_id"])  # canonical form: the worker releases this id
+                # New content re-enters the pipeline, so it needs a slot. If the document
+                # is already active it already holds one; acquiring is idempotent, so a
+                # PATCH on an in-progress document never counts twice.
+                if self._limiter is not None:
+                    await self._limiter.acquire(caller_id, slot_id)  # 429: nothing changed
                 updated = await self._repo.replace_content(
                     current["_id"], caller_id, changes=changes, expected_version=expected_version
                 )
                 if updated is not None:
                     log.info(
                         "document_content_replaced",
-                        document_id=document_id,
+                        document_id=slot_id,
                         content_version=updated["content_version"],
                         previous_status=current["status"],
                     )
-                    # Phase 7: check the content cache, and reserve a rate-limit slot
-                    # if the document was terminal (completed/failed) before this PATCH.
+                    # The content cache is applied by the worker when it claims the job:
+                    # one fenced code path for everything that enters the queue.
                     return updated
 
                 # 0 matched: a concurrent PATCH got in between our read and our write.
                 # Re-read to find out which condition failed.
                 current = await self.get(caller_id=caller_id, document_id=document_id)
+                if self._limiter is not None and current["status"] not in ACTIVE_STATUSES:
+                    await self._limiter.release(caller_id, slot_id)  # we won't be processed
                 _check_precondition(expected_version, current)
                 # Not a version conflict, so the hash matched: someone already stored
                 # this exact content. Nothing to reprocess; fall through to the title.

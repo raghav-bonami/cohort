@@ -15,8 +15,8 @@ IfMatch = Annotated[
     str | None,
     Header(
         alias="If-Match",
-        description='Optional. The Etag (content_version) you last saw, e.g. "3"'
-        "The PATCH applies only if it still current; otherwise 412.",
+        description='Optional. The ETag (content_version) you last saw, e.g. "3". '
+        "The PATCH applies only if it is still current; otherwise 412.",
     ),
 ]
 
@@ -28,10 +28,10 @@ IfMatch = Annotated[
     responses={
         200: {
             "model": SubmitResponse,
-            "description": "Idemoitent retry: this client_doc_ref was already submitted "
-            "with the smae content; the existing document is returned.",
+            "description": "Idempotent retry: this client_doc_ref was already submitted "
+            "with the same content; the existing document is returned.",
         },
-        **error_responses(401, 403, 409, 422),
+        **error_responses(401, 403, 409, 422, 429),
     },
 )
 async def submit_document(
@@ -89,7 +89,7 @@ async def get_document(
 @router.patch(
     "/{document_id}",
     response_model=DocumentResponse,
-    responses=error_responses(400, 401, 404, 412, 422),
+    responses=error_responses(400, 401, 404, 412, 422, 429),
 )
 async def update_document(
     document_id: str,
