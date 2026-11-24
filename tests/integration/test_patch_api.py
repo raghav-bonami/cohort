@@ -189,3 +189,9 @@ async def test_invalid_patch_body_is_422(client, body):
     doc_id = await submit(client)
     resp = await patch(client, doc_id, body)
     assert resp.status_code == 422
+
+
+async def test_title_and_content_in_one_patch(client):
+    doc_id = await submit(client)
+    body = (await patch(client, doc_id, {"title": "New title", "content": "new text"})).json()
+    assert (body["title"], body["content_version"], body["status"]) == ("New title", 2, "queued")

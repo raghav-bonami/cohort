@@ -115,3 +115,13 @@ async def test_limit_still_enforced_when_redis_is_down(make_client, db):
             assert (await submit(http, f"doc {i}")).status_code == 201  # Mongo count
         assert (await submit(http, "doc 3")).status_code == 429
     assert await db[DOCUMENTS].count_documents({}) == 3
+
+
+async def test_reconcile_never_drops_slots_of_active_documents(api, redis_client):
+    ids = [(await submit(api, f"doc {i}")).json()["document_id"] for i in range(3)]
+    # Make their reservations look old: reconcile will check them against Mongo...
+    await redis_client.zadd("active:alice", {doc_id: 0 for doc_id in ids})
+
+    assert (await submit(api, "doc 3")).status_code == 429
+    # ...and keep every one, because all three documents really are still active.
+    assert sorted(await redis_client.zrange("active:alice", 0, -1)) == sorted(ids)
