@@ -28,6 +28,20 @@ services:
       mongo: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  # Test runner. Behind a profile, so `docker compose up` never starts it.
+  # Run with: docker compose run --rm tests
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      REDIS_TEST_URL: redis://redis:6379/15   # DB 15: never the dev data in DB 0
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   mongo:
     image: mongo:7
     ports:
