@@ -3,17 +3,23 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from pymongo.errors import AutoReconnect
+
 from app.core.config import Settings
 from app.db.mongo import DOCUMENTS
+from app.db.redis import create_redis_client
 from app.domain.documents import is_result_current, new_document
 from app.domain.enums import StageName
 from app.repositories.document_repo import DocumentRepository, Fence
 from app.schemas.documents import DocumentUpdate
 from app.services.document_service import DocumentService
+from app.services.rate_limiter import ActiveDocumentLimiter
+from app.services.result_cache import ResultCache
 from app.worker.pipeline import Worker
 from app.worker.stages import SimulatedStages, StageError, make_summary, make_tags
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
+DEAD_REDIS_URL = "redis://localhost:6390/0"  # nothing listens here: simulates Redis down
 SETTINGS = Settings(
     lease_seconds=60,
     max_attempts=3,
@@ -346,3 +352,146 @@ async def test_run_forever_stops_when_signalled(db):
     task = asyncio.create_task(make_worker(db, ScriptedStages(), FakeClock()).run_forever(stop))
     stop.set()
     await asyncio.wait_for(task, timeout=5)  # exits promptly, no hanging loop
+
+
+# ---- the real loop and resilience -------------------------------------------
+
+
+class FlakyRepo(DocumentRepository):
+    """claim_next fails once with a network error, like a short Mongo outage."""
+
+    def __init__(self, db) -> None:
+        super().__init__(db)
+        self.failures_left = 1
+
+    async def claim_next(self, **kwargs):
+        if self.failures_left:
+            self.failures_left -= 1
+            raise AutoReconnect("simulated network blip")
+        return await super().claim_next(**kwargs)
+
+
+class PatchAfterClaimRepo(DocumentRepository):
+    """Lets a PATCH land between the worker's claim and its start_stage."""
+
+    def __init__(self, db, patch) -> None:
+        super().__init__(db)
+        self.patch = patch
+
+    async def claim_next(self, **kwargs):
+        doc = await super().claim_next(**kwargs)
+        if doc is not None and self.patch is not None:
+            patch, self.patch = self.patch, None  # only once
+            await patch()
+        return doc
+
+
+async def wait_until(condition, timeout=5.0):
+    """Poll an async condition; fail the test instead of hanging forever."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not await condition():
+        assert loop.time() < deadline, "condition not reached in time"
+        await asyncio.sleep(0.02)
+
+
+async def test_several_workers_process_each_stage_exactly_once(db):
+    clock, stages = FakeClock(), ScriptedStages()
+    ids = [await insert_doc(db, content=f"document {i} about mongo and redis") for i in range(10)]
+    stop = asyncio.Event()
+    loops = [
+        asyncio.create_task(make_worker(db, stages, clock).run_forever(stop)) for _ in range(3)
+    ]
+
+    async def all_completed():
+        return await db[DOCUMENTS].count_documents({"status": "completed"}) == len(ids)
+
+    try:
+        await wait_until(all_completed)
+    finally:
+        stop.set()
+        await asyncio.gather(*loops)
+
+    assert stages.calls == {"processing": 10, "enriching": 10}  # no stage ran twice
+    for oid in ids:
+        doc = await load(db, oid)
+        assert doc["stages"]["processing"]["attempts"] == 1
+        assert doc["stages"]["enriching"]["attempts"] == 1
+
+
+async def test_worker_loop_survives_a_database_error(db):
+    oid = await insert_doc(db)
+    worker = Worker(FlakyRepo(db), ScriptedStages(), SETTINGS, clock=FakeClock())
+    stop = asyncio.Event()
+    loop_task = asyncio.create_task(worker.run_forever(stop))
+
+    async def completed():
+        return (await load(db, oid))["status"] == "completed"
+
+    try:
+        await wait_until(completed)  # the first claim failed; the loop kept going
+    finally:
+        stop.set()
+        await loop_task
+
+
+async def test_patch_between_claim_and_start_skips_the_stale_job(db):
+    clock, stages = FakeClock(), ScriptedStages()
+    service = make_service(db, clock)
+    oid = await insert_doc(db)
+    repo = PatchAfterClaimRepo(db, lambda: patch_content(service, oid, "patched before start"))
+    worker = Worker(repo, stages, SETTINGS, clock=clock)
+
+    assert await worker.run_once() is True  # claimed v1; PATCH landed; start was fenced out
+    doc = await load(db, oid)
+    assert stages.calls["processing"] == 0  # the stale job never ran
+    assert doc["content_version"] == 2
+    assert doc["stages"]["processing"]["attempts"] == 0
+
+    await worker.run_once()
+    await worker.run_once()
+    doc = await load(db, oid)
+    assert doc["status"] == "completed"
+    assert doc["result"]["summary"] == make_summary("patched before start")
+
+
+async def test_enriching_refuses_a_summary_from_another_version(db):
+    stages = ScriptedStages()
+    oid = await insert_doc(db)
+    await db[DOCUMENTS].update_one(
+        {"_id": oid},
+        {
+            "$set": {
+                "status": "enriching",
+                "stages.processing.state": "succeeded",
+                "stage1_output": {"content_version": 99, "summary": "from other content"},
+            }
+        },
+    )
+    await make_worker(db, stages, FakeClock()).run_once()
+
+    doc = await load(db, oid)
+    assert stages.calls["enriching"] == 0  # tags never derived from a foreign summary
+    assert doc["result"] is None
+    assert doc["stages"]["enriching"]["state"] == "pending"  # retried later, not published
+    assert "another content version" in doc["stages"]["enriching"]["last_error"]
+
+
+async def test_worker_completes_documents_when_redis_is_down(db):
+    dead = create_redis_client(DEAD_REDIS_URL)
+    repo = DocumentRepository(db)
+    worker = Worker(
+        repo,
+        ScriptedStages(),
+        SETTINGS,
+        clock=FakeClock(),
+        limiter=ActiveDocumentLimiter.from_settings(dead, repo, SETTINGS),
+        cache=ResultCache.from_settings(dead, repo, SETTINGS),
+    )
+    oid = await insert_doc(db)
+    try:
+        await worker.run_once()  # cache read falls back to Mongo (a miss)
+        await worker.run_once()  # cache write and slot release fail: logged, not raised
+    finally:
+        await dead.aclose()
+    assert (await load(db, oid))["status"] == "completed"
