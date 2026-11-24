@@ -30,7 +30,7 @@ class StageState(StrEnum):
     FAILED = "failed"  # out of retries (terminal)
 
 
-# "Active" = counts towards the per-user limit of 3 (PDF: queued + processing + enriching).
+# "Active" = counts towards the per-user limit of 3 (queued + processing + enriching).
 ACTIVE_STATUSES: frozenset[DocumentStatus] = frozenset(
     {DocumentStatus.QUEUED, DocumentStatus.PROCESSING, DocumentStatus.ENRICHING}
 )
