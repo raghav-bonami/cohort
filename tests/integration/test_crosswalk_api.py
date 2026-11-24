@@ -18,6 +18,7 @@ async def post(client, *, user="alice", content="quarterly report body", ref=REF
 
 # ---- the policy -------------------------------------------------------------
 
+
 async def test_retry_with_same_content_returns_existing_document(client, db):
     first = await post(client)
     second = await post(client)
@@ -75,6 +76,7 @@ async def test_documents_without_ref_never_collide(client):
 
 # ---- races --------------------------------------------------------------------
 
+
 async def test_concurrent_identical_submits_create_exactly_one_document(client, db):
     responses = await asyncio.gather(*(post(client) for _ in range(5)))
 
@@ -91,6 +93,7 @@ async def test_concurrent_conflicting_submits_one_wins_rest_409(client, db):
 
 
 # ---- GET /documents/by-ref/{ref} ---------------------------------------------
+
 
 async def test_by_ref_returns_own_document_with_etag(client):
     doc_id = (await post(client)).json()["document_id"]

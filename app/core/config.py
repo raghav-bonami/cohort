@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     enriching_max_seconds: float = Field(default=15.0, ge=0)
     stage_failure_rate: float = Field(default=0.1, ge=0, le=1)
 
+    # ---- rate limit and content cache (Redis) --------------------------------
+    # Documents a user may have queued/processing/enriching at the same time.
+    max_active_per_user: int = Field(default=3, ge=1)
+    # Safety net: an idle user's slot set disappears after this long.
+    rate_limit_key_ttl_seconds: int = Field(default=86_400, ge=60)
+    # A reservation younger than this is never treated as stale: its insert (or PATCH)
+    # may still be in flight. Must comfortably exceed one request's duration.
+    rate_limit_grace_seconds: float = Field(default=60.0, gt=0)
+    # How long a computed {summary, tags} stays in the content cache.
+    cache_ttl_seconds: int = Field(default=86_400, ge=1)
+
     @model_validator(mode="after")
     def _check_worker_timings(self) -> "Settings":
         if (

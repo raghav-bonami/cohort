@@ -14,6 +14,8 @@ from app.core.errors import UnauthorizedError
 from app.repositories.document_repo import DocumentRepository
 from app.schemas.documents import UserId
 from app.services.document_service import DocumentService
+from app.services.rate_limiter import ActiveDocumentLimiter
+from app.services.result_cache import ResultCache
 
 
 def get_db(request: Request) -> AsyncDatabase:
@@ -30,9 +32,17 @@ def get_document_repo(db: AsyncDatabase = Depends(get_db)) -> DocumentRepository
 
 
 def get_document_service(
+    request: Request,
     repo: DocumentRepository = Depends(get_document_repo),
 ) -> DocumentService:
-    return DocumentService(repo)
+    """The service with its Redis-backed limiter and cache (both fall back to Mongo)."""
+    settings = request.app.state.settings
+    redis = request.app.state.redis
+    return DocumentService(
+        repo,
+        limiter=ActiveDocumentLimiter.from_settings(redis, repo, settings),
+        cache=ResultCache.from_settings(redis, repo, settings),
+    )
 
 
 async def get_current_user(

@@ -19,6 +19,8 @@ from app.core.clock import Clock, utc_now
 from app.core.config import Settings
 from app.domain.enums import DocumentStatus, StageName
 from app.repositories.document_repo import DocumentRepository, Fence
+from app.services.rate_limiter import ActiveDocumentLimiter
+from app.services.result_cache import ResultCache
 from app.worker.stages import StageError, Stages
 
 log = structlog.get_logger()
@@ -31,11 +33,16 @@ class Worker:
         stages: Stages,
         settings: Settings,
         clock: Clock = utc_now,  # injectable: tests move time forward instead of sleeping
+        *,
+        limiter: ActiveDocumentLimiter | None = None,  # None: no slot release (tests)
+        cache: ResultCache | None = None,  # None: no cache read/write (tests)
     ) -> None:
         self._repo = repo
         self._stages = stages
         self._settings = settings
         self._clock = clock
+        self._limiter = limiter
+        self._cache = cache
 
     async def run_once(self) -> bool:
         """Process at most one stage of one job. Returns False if nothing was due."""
@@ -63,6 +70,24 @@ class Worker:
         )
         previous_attempts = doc["stages"][stage.value]["attempts"]
 
+        # Content cache: this exact content was processed before (a PATCH back to
+        # earlier content, or a duplicate submitted while the first was still running).
+        # Publish the known result instead of running the stages; same fence as always.
+        if stage == StageName.PROCESSING and self._cache is not None:
+            cached = await self._cache.get(doc["content_hash"])
+            if cached is not None:
+                ok = await self._repo.complete_from_cache(
+                    fence,
+                    content_hash=doc["content_hash"],
+                    summary=cached.summary,
+                    tags=cached.tags,
+                    now=self._clock(),
+                )
+                self._log_outcome(job_log, ok, "completed_from_cache")
+                if ok:
+                    await self._release_slot(doc)
+                return True
+
         # The previous holder started the final attempt and never finished (crashed, or
         # ran past its lease). Starting another would exceed the limit - and a document
         # that crashes the worker would be retried forever.
@@ -71,6 +96,8 @@ class Worker:
                 fence, stage, error="lease expired during the final attempt", now=self._clock()
             )
             self._log_outcome(job_log, ok, "stage_failed", attempts=previous_attempts)
+            if ok:
+                await self._release_slot(doc)
             return True
 
         if not await self._repo.start_stage(fence, stage, now=self._clock()):
@@ -88,8 +115,13 @@ class Worker:
             ok, event = await self._record_failure(fence, stage, attempt, str(exc))
 
         self._log_outcome(job_log, ok, event)
-        # Phase 7 hooks in here: on completion write the content cache; on completion
-        # or final failure release the user's rate-limit slot.
+        # The document reached completed or failed: give the user's slot back. Only if
+        # our write landed; if it was fenced out, the document is still active (PATCHed).
+        finished = event == "stage_failed" or (
+            event == "stage_succeeded" and stage == StageName.ENRICHING
+        )
+        if ok and finished:
+            await self._release_slot(doc)
         return True
 
     async def run_forever(self, stop: asyncio.Event) -> None:
@@ -123,13 +155,17 @@ class Worker:
             raise StageError("stage-1 output is missing or belongs to another content version")
 
         tags = await self._stages.enriching(stage1["summary"])
-        return await self._repo.complete_enriching(
+        ok = await self._repo.complete_enriching(
             fence,
             content_hash=doc["content_hash"],
             summary=stage1["summary"],
             tags=tags,
             now=self._clock(),
         )
+        # Written only when the result was actually published (PLAN A8).
+        if ok and self._cache is not None:
+            await self._cache.put(doc["content_hash"], summary=stage1["summary"], tags=tags)
+        return ok
 
     async def _record_failure(
         self, fence: Fence, stage: StageName, attempt: int, error: str
@@ -144,6 +180,11 @@ class Worker:
             fence, stage, error=error, retry_at=now + timedelta(seconds=delay), now=now
         )
         return ok, "stage_retry_scheduled"
+
+    async def _release_slot(self, doc: dict[str, Any]) -> None:
+        """The document is completed or failed: free the user's rate-limit slot."""
+        if self._limiter is not None:
+            await self._limiter.release(doc["user_id"], str(doc["_id"]))
 
     @staticmethod
     def _log_outcome(job_log: Any, ok: bool, event: str, **extra: Any) -> None:

@@ -103,6 +103,36 @@ def content_change_fields(*, content: str, now: datetime) -> dict[str, Any]:
     }
 
 
+def apply_cached_result(
+    doc: dict[str, Any], *, summary: str, tags: list[str], now: datetime
+) -> None:
+    """Turn a not-yet-inserted document into a completed one, using a known result.
+
+    Used on a content-cache hit: the same content was processed before, and summary
+    and tags depend on the content alone, so the result is valid for this document
+    too. It is labelled with THIS document's version and hash. Stages show
+    succeeded with 0 attempts, meaning "done, but not run here".
+    """
+    done = {"state": StageState.SUCCEEDED.value, "attempts": 0, "last_error": None}
+    doc.update(
+        {
+            "status": DocumentStatus.COMPLETED.value,
+            "stages": {
+                StageName.PROCESSING.value: dict(done),
+                StageName.ENRICHING.value: dict(done),
+            },
+            "result": {
+                "content_version": doc["content_version"],
+                "content_hash": doc["content_hash"],
+                "summary": summary,
+                "tags": tags,
+                "completed_at": now,
+            },
+            "next_attempt_at": None,  # never enters the queue
+        }
+    )
+
+
 def is_result_current(doc: dict[str, Any]) -> bool:
     """True only if the stored result was produced from the current content.
 

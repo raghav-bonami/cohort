@@ -48,7 +48,9 @@ class NotFoundError(AppError):
 
 
 class ConflictError(AppError):
-    status_code = 409  # request clashes with existing state client_doc_ref used for other content/owner
+    status_code = (
+        409  # request clashes with existing state client_doc_ref used for other content/owner
+    )
     code = "conflict"
 
 
@@ -60,6 +62,11 @@ class BadRequestError(AppError):
 class PreconditionFailedError(AppError):
     status_code = 412  # If-Match named a content_version that is no longer current
     code = "precondition_failed"
+
+
+class RateLimitedError(AppError):
+    status_code = 429  # too many documents in progress for this user
+    code = "rate_limited"
 
 
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:

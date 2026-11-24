@@ -14,7 +14,10 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.indexes import ensure_indexes
 from app.db.mongo import create_mongo_client
+from app.db.redis import create_redis_client
 from app.repositories.document_repo import DocumentRepository
+from app.services.rate_limiter import ActiveDocumentLimiter
+from app.services.result_cache import ResultCache
 from app.worker.pipeline import Worker
 from app.worker.stages import SimulatedStages
 
@@ -36,17 +39,25 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
-    log.info("worker_started")
 
     client = create_mongo_client(settings.mongo_url)
     db = client[settings.mongo_db]
+    # Redis is optional at runtime: the limiter and cache fall back if it is down.
+    redis = create_redis_client(settings.redis_url)
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
     try:
         # The claim query needs the claim_queue index; creating it is idempotent.
         await ensure_indexes(db)
-        worker = Worker(DocumentRepository(db), SimulatedStages(settings), settings)
+        repo = DocumentRepository(db)
+        worker = Worker(
+            repo,
+            SimulatedStages(settings),
+            settings,
+            limiter=ActiveDocumentLimiter.from_settings(redis, repo, settings),
+            cache=ResultCache.from_settings(redis, repo, settings),
+        )
         log.info("worker_started", concurrency=settings.worker_concurrency)
 
         # TaskGroup: if one loop crashes on a bug, the others are cancelled and the
@@ -56,6 +67,7 @@ async def main() -> None:
             for slot in range(settings.worker_concurrency):
                 tasks.create_task(worker.run_forever(stop), name=f"worker-slot-{slot}")
     finally:
+        await redis.aclose()
         await client.close()
         log.info("worker_stopped")
 

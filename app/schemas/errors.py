@@ -1,7 +1,8 @@
 """Error response models. Used only to document error shapes in OpenAPI (/docs)."""
 
-from pydantic import BaseModel
 from typing import Any
+
+from pydantic import BaseModel
 
 
 class ErrorDetail(BaseModel):
